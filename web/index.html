@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#142525">
+  <title>AI Board · 信号工作台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="mast-inner">
+      <div class="brand"><span class="chip-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>AI Board</div>
+      <span class="mast-divider" aria-hidden="true"></span>
+      <span class="model">ESP32-C3 / CH446Q</span>
+      <div class="mast-status">
+        <span class="connection" id="connection" data-state="pending"><i></i><span id="connection-label">连接中</span></span>
+        <button type="button" class="access-button" id="open-key">访问密钥</button>
+      </div>
+    </div>
+  </header>
+  <main class="workbench">
+    <div class="heading">
+      <div>
+        <h1>信号工作台</h1>
+        <p>编排接线、查看波形，或在板上运行 Lua 脚本。</p>
+      </div>
+      <div class="board-status" aria-label="设备信息">
+        <div><span>板卡地址</span><strong id="board-ip">—</strong></div>
+        <div><span>启动分区</span><strong id="board-slot">—</strong></div>
+        <div><span>矩阵</span><strong id="board-arm">—</strong></div>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="工作台导航">
+      <a href="#matrix" data-tab="matrix" aria-current="page">接线矩阵</a>
+      <a href="#protocol" data-tab="protocol">协议工具</a>
+      <a href="#trace" data-tab="trace">信号捕获</a>
+      <a href="#protocol-receive" data-tab="protocol-receive">协议接收</a>
+      <a href="#lua" data-tab="lua">Lua 脚本</a>
+      <a href="#history" data-tab="history">测试记录</a>
+      <a href="#device" data-tab="device">设备管理</a>
+    </nav>
+    <p id="ai-control-notice" class="ai-control-notice" role="status" hidden>AI 正在控制板卡，网页为只读模式。</p>
+    <section id="matrix" class="view" aria-label="接线矩阵">
+      <div class="split">
+        <article class="card matrix-card">
+          <div class="card-header">
+            <div><h2>接线矩阵</h2><p>16 个 BBX 端口 <span aria-hidden="true">·</span> 8 条内部通道</p></div>
+            <button type="button" class="button compact" id="refresh">读回状态</button>
+          </div>
+          <div class="matrix-toolbar">
+            <div class="legend"><span><i class="dot routed"></i>已接通</span><span><i class="dot draft"></i>待应用</span><span><i class="dot open"></i>断开</span></div>
+            <span id="crosspoint-count" class="meter">0 处连接</span>
+          </div>
+          <div class="matrix-scroll">
+            <table class="matrix-table" id="route-grid" aria-label="BBX 和 Y 通道交叉点"><thead></thead><tbody></tbody></table>
+          </div>
+          <details class="route-paste">
+            <summary>从接线说明填入草稿</summary>
+            <form id="route-text-form" data-board-edit class="route-text-form">
+              <label>端口映射<textarea name="mappings" rows="2" maxlength="2048" placeholder="BBX02→Y1, BBX02→Y3" spellcheck="false" required></textarea></label>
+              <button class="button" type="submit">解析到草稿</button>
+            </form>
+          </details>
+          <div class="matrix-footer">
+            <div><strong id="draft-label">当前接线</strong><span>同一列或同一行可选多个交叉点。标为同一组的端口会共用信号。</span></div>
+            <div class="actions">
+              <button class="button secondary" id="draft-clear" data-board-edit type="button">清空草稿</button>
+              <button class="button primary" id="apply-routes" data-board-edit type="button">应用接线</button>
+            </div>
+          </div>
+        </article>
+        <aside class="card controls">
+          <div class="card-header"><div><h2>通道控制</h2><p>读取电平或驱动信号</p></div><span id="selected-pin" class="channel-tag">Y0</span></div>
+          <div class="control-body">
+            <div id="channel-picker" class="channel-picker" aria-label="选择 Y 通道"></div>
+            <div class="pin-state"><span id="selected-gpio">GPIO18</span><span id="selected-level">电平 —</span></div>
+            <form id="gpio-form" data-board-edit class="compact-form">
+              <label>通道模式<select name="mode">
+                <option value="input">高阻输入</option><option value="pullup">上拉输入</option><option value="pulldown">下拉输入</option>
+                <option value="low">输出低电平</option><option value="high">输出高电平</option><option value="pwm">PWM</option>
+              </select></label>
+              <div class="fields" id="pwm-fields" hidden>
+                <label>频率 (Hz)<input type="number" name="hz" min="100" max="20000" value="1000"></label>
+                <label>占空比 (%)<input type="number" name="duty" min="0" max="100" value="50"></label>
+              </div>
+              <button class="button primary full" type="submit">应用模式</button>
+            </form>
+            <form id="alias-form" data-board-edit class="compact-form alias-form">
+              <div class="fields alias-fields">
+                <label>端口<select name="port" id="alias-port"></select></label>
+                <label>线名<input name="label" maxlength="24" placeholder="例如 TX"></label>
+              </div>
+              <button class="button full" type="submit">保存线名</button>
+            </form>
+          </div>
+        </aside>
+      </div>
+      <article class="card wiring" id="out-card" hidden>
+        <div class="card-header">
+          <div><h2>OUT 供电</h2><p>H1.4 · 关断时经 330 Ω 下拉放电</p></div>
+          <span class="channel-tag" id="out-state">待读回</span>
+        </div>
+        <div class="card-content">
+          <form id="out-form" data-board-edit class="compact-form">
+            <label>OUT 模式<select name="mode">
+              <option value="5v">5 V 供电</option>
+              <option value="gnd">GND 放电</option>
+            </select></label>
+            <button class="button primary" type="submit">应用 OUT 模式</button>
+          </form>
+        </div>
+      </article>
+      <article class="card wiring">
+        <div class="card-header"><div><h2>信号连接</h2><p>同一组内的 Y 与 BBX 在电气上相连</p></div></div>
+        <div id="wire-list" class="wire-list"></div>
+      </article>
+    </section>
+    <section id="protocol" class="view" aria-label="协议工具" hidden>
+      <div class="split protocol-split">
+        <article class="card">
+          <div class="card-header"><div><h2>协议工具</h2><p>先在矩阵将外部信号接到对应 Y，再发起操作。</p></div></div>
+          <div class="card-content">
+            <label class="tool-picker">操作<select id="protocol-select" data-board-edit>
+              <option value="uart">UART 收发</option><option value="i2c_scan">I²C 扫描</option><option value="i2c_read">I²C 寄存器读</option><option value="spi">SPI 交换</option><option value="proxy">UART 单轮代理</option>
+            </select></label>
+            <form id="protocol-form" data-board-edit class="command-form"></form>
+          </div>
+        </article>
+        <article class="card output-card">
+          <div class="card-header"><div><h2>协议结果</h2><p>最近一次操作的设备响应</p></div><button class="button compact" type="button" data-copy="protocol-result">复制</button></div>
+          <pre class="output" id="protocol-result">等待操作</pre>
+          <div class="card-content compact-form"><button type="button" class="button" id="loopback-button" data-board-edit>运行板内 UART 回环</button></div>
+        </article>
+      </div>
+    </section>
+    <section id="trace" class="view" aria-label="信号捕获" hidden>
+      <div class="split trace-split">
+        <article class="card">
+          <div class="card-header"><div><h2>信号捕获</h2><p>最多四路同步采集，完成后经 Wi-Fi 一次返回。</p></div></div>
+          <form class="card-content command-form" id="capture-form" data-board-edit>
+            <label>协议解码<select id="capture-protocol" data-board-view>
+              <option value="uart">UART</option><option value="i2c">I²C</option><option value="spi">SPI</option><option value="raw">原始波形</option>
+            </select></label>
+            <div class="fields">
+              <label><span id="capture-label-a">通道 A</span><select name="a" data-channels></select></label>
+              <label><span id="capture-label-b">通道 B</span><select name="b" data-channels data-off></select></label>
+              <label><span id="capture-label-c">通道 C</span><select name="c" data-channels data-off></select></label>
+              <label><span id="capture-label-d">通道 D</span><select name="d" data-channels data-off></select></label>
+            </div>
+            <label id="capture-uart-settings">UART 波特率<input type="number" name="baud" min="0" max="2000000" value="0"><small id="capture-baud-limit">0 表示从边沿估计</small></label>
+            <div class="fields" id="capture-spi-settings" hidden>
+              <label>SPI 模式<select id="capture-spi-mode" data-board-view>
+                <option value="0">0 · CPOL 0 / CPHA 0</option><option value="1">1 · CPOL 0 / CPHA 1</option>
+                <option value="2">2 · CPOL 1 / CPHA 0</option><option value="3">3 · CPOL 1 / CPHA 1</option>
+              </select></label>
+              <label>位顺序<select id="capture-spi-order" data-board-view>
+                <option value="msb">MSB 优先</option><option value="lsb">LSB 优先</option>
+              </select></label>
+            </div>
+            <label>采集引擎<select name="engine">
+              <option value="dma">硬件同步采样 · 短窗口</option>
+              <option value="gpio">GPIO 边沿记录 · 长窗口</option>
+            </select></label>
+            <div class="fields" id="capture-dma-settings">
+              <label>采样率<select name="sample_hz">
+                <option value="1000000">1 MHz</option><option value="2000000">2 MHz</option>
+                <option value="4000000">4 MHz</option><option value="5000000">5 MHz</option>
+                <option value="8000000" selected>8 MHz</option><option value="10000000">10 MHz</option>
+                <option value="20000000">20 MHz</option>
+              </select></label>
+              <label>记录窗口 (µs)<input name="window_us" type="number" min="100" max="8192" value="2500" required><small id="capture-dma-limit">最长 8192 µs</small></label>
+            </div>
+            <label id="capture-gpio-window" hidden>记录窗口 (ms)<input type="number" name="ms" min="10" max="500" value="150" required disabled></label>
+            <label>启动方式<select name="trigger">
+              <option value="manual">点击即采集</option><option value="rising">上升沿触发</option><option value="falling">下降沿触发</option>
+            </select></label>
+            <div class="fields" id="capture-trigger-fields" hidden>
+              <label>触发通道<select name="trigger_channel" disabled>
+                <option value="0">通道 A</option><option value="1">通道 B</option>
+                <option value="2">通道 C</option><option value="3">通道 D</option>
+              </select></label>
+              <label>等待边沿 (ms)<input name="wait_ms" type="number" min="100" max="5000" value="3000" required disabled></label>
+            </div>
+            <p class="capture-hint" id="capture-trigger-hint" hidden></p>
+            <button class="button primary" id="capture-start" type="submit">开始采集</button>
+          </form>
+          <details class="capture-fixture card-content">
+            <summary>板内采集自检</summary>
+            <div class="compact-form">
+              <p class="capture-hint">主机驱动发出的信号经 CH446Q 接到独立采集 GPIO。I²C 无从机时预期收到地址 NACK，SPI 回环预期 MOSI 和 MISO 字节一致。</p>
+              <div class="actions">
+                <button class="button" type="button" id="i2c-host-button" data-board-edit>采集 I²C 主机</button>
+                <button class="button" type="button" id="spi-host-button" data-board-edit>采集 SPI 主机回环</button>
+                <a class="recovery-link" href="#protocol">UART 主机回环</a>
+              </div>
+              <div class="actions">
+                <button class="button compact" type="button" id="i2c-loopback-button" data-board-edit>I²C 参考波形</button>
+                <button class="button compact" type="button" id="spi-loopback-button" data-board-edit>SPI 参考波形</button>
+              </div>
+            </div>
+          </details>
+        </article>
+        <article class="card output-card scope-card">
+          <div class="card-header"><div><h2>波形分析</h2><p id="capture-summary">等待采集或导入 JSON</p></div><div class="actions">
+            <input id="capture-import-file" type="file" accept=".json,application/json" hidden>
+            <button class="button compact" id="capture-import" type="button">导入 JSON</button>
+            <button class="button compact" id="capture-vcd" type="button" disabled>导出 VCD</button>
+            <button class="button compact" type="button" data-copy="capture-result">复制</button>
+          </div></div>
+          <div class="scope-toolbar" role="group" aria-label="波形查看和测量">
+            <div class="scope-tool-group" role="group" aria-label="时间轴">
+              <button class="button compact" id="scope-zoom-out" type="button" aria-label="缩小时间轴" title="缩小时间轴" disabled>−</button>
+              <button class="button compact" id="scope-zoom-in" type="button" aria-label="放大时间轴" title="放大时间轴" disabled>＋</button>
+              <button class="button compact" id="scope-fit" type="button" disabled>全览</button>
+              <button class="button compact" id="scope-trigger" type="button" disabled>触发点</button>
+            </div>
+            <div class="scope-tool-group" role="group" aria-label="测量游标">
+              <button class="button compact scope-cursor-a" id="scope-cursor-a" type="button" aria-pressed="false" disabled>游标 A</button>
+              <button class="button compact scope-cursor-b" id="scope-cursor-b" type="button" aria-pressed="false" disabled>游标 B</button>
+              <button class="button compact" id="scope-cursor-clear" type="button" disabled>清除</button>
+            </div>
+            <div class="scope-tool-group" role="group" aria-label="通道和边沿定位">
+              <label class="scope-channel">测量通道<select id="scope-channel" disabled></select></label>
+              <button class="button compact" id="scope-edge-prev" type="button" disabled>上一沿</button>
+              <button class="button compact" id="scope-edge-next" type="button" disabled>下一沿</button>
+            </div>
+            <span id="scope-viewport" class="scope-viewport">—</span>
+          </div>
+          <div class="scope">
+            <canvas id="scope-canvas" tabindex="0" aria-label="数字波形" aria-describedby="scope-gestures"></canvas>
+            <div id="scope-empty">等待捕获</div>
+          </div>
+          <div class="scope-overview"><canvas id="scope-overview" role="img" aria-label="整段波形和当前查看范围" aria-describedby="scope-gestures"></canvas></div>
+          <form id="scope-window-form" class="scope-window-form" aria-label="显示窗口" novalidate>
+            <label>起点 (ms)<input id="scope-window-start" type="number" inputmode="decimal" step="any" min="0" required disabled aria-describedby="scope-window-error"></label>
+            <label>终点 (ms)<input id="scope-window-end" type="number" inputmode="decimal" step="any" min="0" required disabled aria-describedby="scope-window-error"></label>
+            <button id="scope-window-apply" class="button compact" type="submit" disabled>应用</button>
+            <span id="scope-window-error" role="alert" hidden></span>
+          </form>
+          <div class="scope-readout">
+            <div id="scope-measure">用游标 A、B 测量时间间隔</div>
+            <div id="scope-hover">指向波形查看电平和脉冲参数</div>
+            <div id="scope-gestures">滚轮缩放 · 拖动平移 · 拖动总览边界调整范围</div>
+          </div>
+          <div id="capture-channels" class="capture-channels"></div>
+          <div id="capture-i2c" class="decode-results"></div>
+          <div id="capture-spi" class="decode-results"></div>
+          <details class="raw-data"><summary>查看原始边沿</summary><pre class="output" id="capture-result">等待捕获</pre></details>
+        </article>
+      </div>
+    </section>
+    <section id="protocol-receive" class="view" aria-label="协议接收" hidden>
+      <div class="split protocol-split">
+        <article class="card">
+          <div class="card-header"><div><h2>协议接收</h2><p>由硬件外设接收数据，采集结束后经 Wi-Fi 一次返回。</p></div></div>
+          <div class="card-content compact-form">
+            <label>协议<select id="receive-mode"><option value="i2c">I²C 从机</option><option value="spi">SPI 从机</option><option value="uart">UART 接收</option></select></label>
+            <form id="spi-slave-form" data-board-edit class="command-form" hidden>
+              <p>将 3.3 V 主机与板卡共地，在<a class="recovery-link" href="#matrix">接线矩阵</a>中把每根信号引到独立的 Y。先启动采集，再让主机拉低 CS 发送。</p>
+              <div class="fields">
+                <label>CS <select name="cs" data-channels></select><small></small></label>
+                <label>SCK <select name="sck" data-channels></select><small></small></label>
+                <label>MOSI <select name="mosi" data-channels></select><small></small></label>
+                <label>MISO <select name="miso" data-channels data-off="仅接收 MOSI"></select><small></small></label>
+              </div>
+              <label id="spi-slave-reply" hidden>固定应答 HEX<input class="mono" name="reply" placeholder="例如 A5 5A FF 00" maxlength="191" spellcheck="false" autocomplete="off" required disabled><small>每帧重复应答，后续字节补 00。</small></label>
+              <div class="fields">
+                <label>SPI 模式<select name="mode">
+                  <option value="0">Mode 0 · CPOL 0 / CPHA 0</option><option value="1">Mode 1 · CPOL 0 / CPHA 1</option>
+                  <option value="2">Mode 2 · CPOL 1 / CPHA 0</option><option value="3">Mode 3 · CPOL 1 / CPHA 1</option>
+                </select></label>
+                <label>位顺序<select name="order"><option value="msb">MSB 优先</option><option value="lsb">LSB 优先</option></select></label>
+                <label>每帧容量 (字节)<input name="bytes" type="number" min="4" max="64" step="4" value="16" required></label>
+                <label>目标帧数<input name="count" type="number" min="1" max="8" value="2" required></label>
+              </div>
+              <label>最长等待 (ms)<input name="wait_ms" type="number" min="100" max="5000" value="5000" required></label>
+              <button class="button primary" id="spi-slave-start" type="submit">启动批次采集</button>
+            </form>
+            <form id="i2c-receive-form" data-board-edit class="command-form">
+              <p>将 SDA、SCL 经<a class="recovery-link" href="#matrix">接线矩阵</a>分别接到两个 Y，共地并使用外部 3.3 V 上拉。请使用独立的测试地址。</p>
+              <div class="fields">
+                <label>SDA <select name="sda" data-channels></select><small></small></label>
+                <label>SCL <select name="scl" data-channels></select><small></small></label>
+                <label>从机地址（7 位）<input name="address" class="mono" value="0x48" maxlength="4" autocomplete="off" spellcheck="false" required><small>可填十六进制或十进制</small></label>
+                <label>采集方式<select id="i2c-receive-kind"><option value="write">仅接收写入</option><option value="register">寄存器表读写</option></select></label>
+                <label id="i2c-receive-capacity">每帧容量（字节）<input name="bytes" type="number" min="1" max="64" value="64" required></label>
+                <label id="i2c-receive-count">目标写入帧数<input name="count" type="number" min="1" max="8" value="1" required></label>
+                <label>最长等待（ms）<input name="wait_ms" type="number" min="100" max="5000" value="3000" required></label>
+              </div>
+              <p id="i2c-write-tip">每次写入以 STOP 结束，板卡会应答并保存写入字节。</p>
+              <fieldset id="i2c-register-config" class="compact-form i2c-register-config" hidden disabled>
+                <legend>寄存器表</legend>
+                <p>最多 8 项，每项 1–32 字节。地址可用十六进制或十进制。</p>
+                <label class="checkbox"><input id="i2c-auto-increment" type="checkbox">地址自动递增</label>
+                <div id="i2c-register-rows"></div>
+                <div class="actions"><button class="button compact" id="i2c-add-register" type="button">添加寄存器</button></div>
+                <label>目标交易数<input id="i2c-register-count" type="number" min="1" max="8" placeholder="默认等于寄存器数"></label>
+                <p id="i2c-register-write-tip">主机先发寄存器地址和可选数据，再用重复起始读回。写入会替换整个值，下一批从初始值开始。</p>
+                <p id="i2c-auto-increment-tip" hidden>初始值的长度就是每个地址的宽度。主机发一次起始地址，按相邻地址写入完整值，再用一次重复起始读回。每笔最多写入 32 字节数据，地址须连续且止于 0xFF。下一批从初始值开始。</p>
+                <p id="i2c-bench-write-tip">板内回环按表格顺序执行。填写测试写入可验证更新，留空则读取当前值。</p>
+              </fieldset>
+              <button class="button primary" id="i2c-receive-start" type="submit">启动 I²C 接收</button>
+            </form>
+            <form id="uart-receive-form" data-board-edit class="command-form" hidden>
+              <p>将发送端 TX 经<a class="recovery-link" href="#matrix">接线矩阵</a>接到所选 Y，两端共地。使用 3.3 V、8N1，启动后再发送。</p>
+              <div class="fields">
+                <label>RX <select name="rx" data-channels></select><small></small></label>
+                <label>波特率<input name="baud" type="number" min="9600" max="5000000" value="115200" required></label>
+                <label>字节上限<input name="bytes" type="number" min="1" max="2048" value="512" required></label>
+                <label>最长等待（ms）<input name="wait_ms" type="number" min="100" max="5000" value="3000" required></label>
+                <label>接收后空闲结束（ms）<input name="idle_ms" type="number" min="0" max="1000" value="20" required><small>0 为关闭，启用时至少 10 ms</small></label>
+              </div>
+              <button class="button primary" id="uart-receive-start" type="submit">启动 UART 接收</button>
+            </form>
+          </div>
+          <details id="spi-slave-bench-panel" class="capture-fixture card-content" hidden>
+            <summary>板内 SPI 压测</summary>
+            <form id="spi-slave-bench" data-board-edit class="compact-form">
+              <label>测试项目<select name="phase"><option value="rx">MOSI 仅接收</option><option value="duplex">MOSI / MISO 全双工</option><option value="gap">连续两帧的 CS 间隔</option></select></label>
+              <div class="fields">
+                <label>目标 SCK (Hz)<input name="hz" type="number" min="10000" max="20000000" value="100000" required></label>
+                <label id="spi-slave-bench-gap" hidden>CS 高电平间隔 (ns)<input name="gap_ns" type="number" min="150" max="1000000" value="100000" required disabled></label>
+              </div>
+              <button class="button" id="spi-slave-bench-start" type="submit">运行一组压测</button>
+            </form>
+          </details>
+          <details id="receive-bench-panel" class="capture-fixture card-content">
+            <summary>板内回环压测</summary>
+            <form id="receive-bench-form" data-board-edit class="compact-form">
+              <label><span id="receive-bench-rate">目标 SCL（Hz）</span><input name="rate" type="number" min="10000" max="400000" value="100000" required></label>
+              <fieldset id="i2c-burst-bench" class="fields i2c-register-config" aria-label="递增读写测试" hidden disabled>
+                <label>起始寄存器<input id="i2c-burst-start" class="mono" value="0x10" maxlength="4" autocomplete="off" spellcheck="false" required></label>
+                <label>连续写入（HEX）<input id="i2c-burst-data" class="mono" placeholder="A5 5A 00 80 12 34" maxlength="127" autocomplete="off" spellcheck="false" required></label>
+              </fieldset>
+              <button class="button" id="receive-bench-start" type="submit">运行一组压测</button>
+            </form>
+          </details>
+        </article>
+        <article id="receive-output" class="card output-card">
+          <div class="card-header"><div><h2>接收结果</h2><p id="protocol-receive-summary" role="status">等待采集</p></div><button class="button compact" type="button" data-copy="protocol-receive-json">复制 JSON</button></div>
+          <div id="protocol-receive-results" class="decode-results"></div>
+          <details class="raw-data"><summary>查看原始响应</summary><pre class="output" id="protocol-receive-json">等待采集</pre></details>
+        </article>
+        <article id="spi-slave-output" class="card output-card" hidden>
+          <div class="card-header"><div><h2>SPI 从机结果</h2><p id="spi-slave-summary" role="status">等待采集</p></div><button class="button compact" type="button" data-copy="spi-slave-json">复制 JSON</button></div>
+          <div id="spi-slave-frames" class="decode-results"></div>
+          <details class="raw-data"><summary>查看原始响应</summary><pre class="output" id="spi-slave-json">等待采集</pre></details>
+        </article>
+      </div>
+    </section>
+    <section id="lua" class="view" aria-label="Lua 脚本" hidden>
+      <div class="lua-workspace">
+        <aside class="card" id="lua-scripts">
+          <div class="card-header">
+            <div><h2>板上脚本</h2><p id="lua-library-status" aria-live="polite">等待读取</p></div>
+            <div class="lua-library-actions">
+              <button type="button" class="button compact" id="lua-new" data-board-edit>新建</button>
+              <button type="button" class="button compact" id="lua-refresh">刷新</button>
+            </div>
+          </div>
+          <div class="lua-library-content">
+            <details class="lua-file-tree" id="lua-file-tree" open>
+              <summary><span class="lua-tree-chevron" aria-hidden="true"></span><span class="lua-tree-folder" aria-hidden="true"></span>工作区</summary>
+              <ul id="lua-file-list" class="lua-file-list" aria-label="Lua 文件"></ul>
+              <p id="lua-library-empty" hidden>暂无脚本</p>
+            </details>
+          </div>
+        </aside>
+        <article class="card">
+          <div class="card-header">
+            <div><h2>Lua 编辑器</h2><p id="lua-editor-status" aria-live="polite">新建脚本</p></div>
+            <span class="meter" id="lua-size">0 / 8192 字节</span>
+          </div>
+          <form id="lua-editor" class="card-content compact-form" aria-label="Lua 脚本编辑">
+            <div class="lua-fields">
+              <label>文件名<input class="mono" id="lua-name" type="text" placeholder="workflow.lua" maxlength="48" autocapitalize="none" autocomplete="off" spellcheck="false"><small>用英文或数字开头，使用字母、数字、点、下划线或连字符，以 .lua 结尾。</small></label>
+              <label>运行超时（ms）<input class="mono" id="lua-timeout" type="number" min="100" max="10000" step="1" value="5000"></label>
+            </div>
+            <div class="lua-source-field">
+              <div class="lua-source-bar">
+                <label for="lua-source" id="lua-source-label">Lua 源码</label>
+                <button type="button" class="button compact" id="lua-find" hidden>查找</button>
+              </div>
+              <textarea id="lua-source" class="mono" rows="15" maxlength="8192" autocapitalize="none" autocomplete="off" spellcheck="false" aria-describedby="lua-size" placeholder="return assert(board.call(&quot;state&quot;))"></textarea>
+              <div id="lua-code-editor" hidden></div>
+            </div>
+            <div class="lua-editor-footer">
+              <p>运行当前编辑区内容，保存后才会写入板卡。</p>
+              <div class="actions">
+                <button type="submit" class="button" id="lua-save" aria-keyshortcuts="Control+S Meta+S" data-board-edit disabled>保存到板卡</button>
+                <button type="button" class="button primary" id="lua-run" aria-keyshortcuts="Control+Enter Meta+Enter" data-board-edit disabled>运行</button>
+              </div>
+            </div>
+          </form>
+        </article>
+        <article class="card output-card lua-result-card">
+          <div class="card-header">
+            <div><h2>运行结果</h2><p id="lua-result-state" role="status">等待运行</p></div>
+            <button type="button" class="button compact" id="lua-copy-result" data-copy="lua-result" disabled>复制 JSON</button>
+          </div>
+          <div class="card-content lua-result-grid" id="lua-result-content" hidden>
+            <div id="lua-return-panel"><h3>返回值</h3><pre class="output inline" id="lua-return"></pre></div>
+            <div id="lua-error-panel" hidden>
+              <div class="lua-error-heading"><h3>错误</h3><button type="button" class="button compact" id="lua-error-jump" hidden></button></div>
+              <pre class="output inline" id="lua-error"></pre>
+            </div>
+            <div><h3>打印日志</h3><pre class="output inline" id="lua-log"></pre></div>
+          </div>
+          <details class="raw-data" id="lua-raw-result" hidden><summary>查看原始响应</summary><pre class="output" id="lua-result"></pre></details>
+        </article>
+      </div>
+    </section>
+    <section id="history" class="view" aria-label="测试记录" hidden>
+      <div class="split history-split">
+        <article class="card history">
+          <div class="card-header"><div><h2>操作记录</h2><p>接线变更、协议返回与自检结果</p></div><button class="button compact" id="export-history" type="button">导出 JSON</button></div>
+          <div class="card-content" id="history-list"></div>
+        </article>
+        <article class="card presets">
+          <div class="card-header"><div><h2>接线与测试预设</h2><p>保存当前草稿和最近一次协议操作。</p></div></div>
+          <div class="card-content">
+            <form class="compact-form" id="preset-form" data-board-edit>
+              <label>预设名称<input name="name" placeholder="例如 传感器读寄存器" maxlength="32" required></label>
+              <label class="checkbox"><input type="checkbox" name="with_test">附带最近一次协议操作及预期结果</label>
+              <button class="button primary" type="submit">保存预设</button>
+            </form>
+            <div id="preset-list" data-board-edit></div>
+          </div>
+        </article>
+      </div>
+    </section>
+    <section id="device" class="view" aria-label="设备管理" hidden>
+      <div class="maintenance">
+        <article class="card">
+          <div class="card-header"><div><h2>矩阵自检</h2><p>448 组内部回环</p></div></div>
+          <div class="card-content compact-form">
+            <button class="button" id="arm-button" data-board-edit type="button">启用矩阵</button>
+            <button class="button primary" id="selftest-button" data-board-edit type="button">运行自检</button>
+            <pre class="output inline" id="selftest-result">等待自检</pre>
+          </div>
+        </article>
+        <article class="card">
+          <div class="card-header"><div><h2>Wi-Fi 配网</h2><p>设置 2.4 GHz 网络后设备会重启。</p></div></div>
+          <form id="wifi-form" data-board-edit class="card-content compact-form">
+            <label>网络名称<input name="ssid" required maxlength="32" autocomplete="off"></label>
+            <label>Wi-Fi 密码<input type="password" name="password" maxlength="63" autocomplete="off"></label>
+            <button class="button primary" type="submit">保存并重启</button>
+            <a class="recovery-link" href="/setup">打开简易配网页</a>
+          </form>
+        </article>
+        <article class="card">
+          <div class="card-header"><div><h2>固件更新</h2><p>上传 ESP-IDF 应用镜像到备用分区。</p></div></div>
+          <form id="ota-form" data-board-edit class="card-content compact-form">
+            <label>应用镜像<input type="file" name="binary" accept=".bin,application/octet-stream" required></label>
+            <button class="button primary" type="submit">上传 OTA</button>
+            <output id="ota-result" aria-live="polite"></output>
+          </form>
+        </article>
+        <article class="card">
+          <div class="card-header"><div><h2>运行诊断</h2><p>固件版本、运行时长与信号强度</p></div><button type="button" class="button compact" id="diagnostics-button">读取</button></div>
+          <pre class="output" id="diagnostics-result">等待诊断</pre>
+        </article>
+        <article class="card">
+          <div class="card-header">
+            <div><h2>已保存的 Lua 脚本</h2></div>
+            <a class="recovery-link" href="#lua">打开 Lua 工作台</a>
+          </div>
+        </article>
+      </div>
+    </section>
+    <footer class="page-footer"><span>AI Board</span><span>共地 · BBX 信号需兼容 3.3 V</span></footer>
+  </main>
+  <div id="notice" class="notice" hidden>
+    <span id="notice-message" aria-hidden="true"></span>
+    <button type="button" id="notice-close" aria-label="关闭操作提示">×</button>
+  </div>
+  <span id="notice-live" class="notice-live" role="status" aria-atomic="true"></span>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <form method="dialog" class="compact-form">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-message"></p>
+      <div class="actions">
+        <button id="confirm-cancel" class="button" type="submit" value="cancel" autofocus>取消</button>
+        <button id="confirm-accept" class="button primary" type="submit" value="confirm">确认</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="key-dialog">
+    <form id="key-form" class="compact-form">
+      <div class="dialog-header"><h2>设备访问密钥</h2><button type="button" id="close-key" class="button compact" aria-label="关闭">关闭</button></div>
+      <p>使用板子启动日志里的设备密钥。密钥仅保存在当前浏览器会话。</p>
+      <label>访问密钥<input id="board-key" name="key" type="password" autocomplete="off" required maxlength="24" spellcheck="false"></label>
+      <div class="actions"><button type="button" class="button secondary" id="clear-key">清除密钥</button><button class="button primary" type="submit">连接设备</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

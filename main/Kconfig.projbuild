@@ -1,0 +1,8 @@
+menu "AI Board"
+config AI_BOARD_OUT_CONTROL
+    bool "Enable RPC control of the H1 OUT supply"
+    default n
+    help
+        Allow the authenticated workbench to control GPIO0 and the OUT supply.
+        Leave disabled when validating firmware without changing the OUT circuit.
+endmenu
