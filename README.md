@@ -6,6 +6,8 @@ AI Board 让 AI 在真实硬件上编写、烧录和验证嵌入式代码。首�
 
 完整参数和返回值见 [CLI 接口](docs/CLI.md) 和 [Lua 接口](docs/Lua.md)。[ChatGPT 技能](skills/ai-board-embedded-debug/SKILL.md) 与 CLI 共用 `tools/`，运行 `python3 tools/package_skill.py` 可打包技能。
 
+![AI Board 2V0 工具板的三维渲染图](docs/images/ai-board-2v0-render.png)
+
 ## 工作台截图
 
 ![AI Board 接线矩阵](docs/images/matrix-workbench.jpg)
