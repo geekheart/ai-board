@@ -271,3 +271,7 @@ RMT 的每个非零相位必须长于 5 个 APB 周期加 6 个 RMT 源时钟周
 python3 tools/board_rpc.py --url http://BOARD_IP arm
 python3 tools/board_rpc.py --url http://BOARD_IP selftest
 ```
+
+## 许可证
+
+本项目采用 [MIT 许可证](LICENSE)。
